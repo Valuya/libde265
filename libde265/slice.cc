@@ -3269,39 +3269,30 @@ int residual_coding(thread_context* tctx,
       if (nCoefficients > 8) {
         escapeDataPresent = true;
       }
-      for (int c = 0; c < lastGreater1Coefficient; c++) {
-        int greater1_flag =
-            decode_coeff_abs_level_greater1(tctx, cIdx, i,
-                                            c == 0,
-                                            firstSubblock,
-                                            lastSubblock_greater1Ctx,
-                                            &lastInvocation_greater1Ctx,
-                                            &lastInvocation_coeff_abs_level_greater1_flag,
-                                            &lastInvocation_ctxSet, ctxSet);
-
-        if (greater1_flag) {
-          coeff_value[c]++;
-
-          c1 = 0;
-
-          if (newLastGreater1ScanPos == -1) {
-            newLastGreater1ScanPos = c;
-          }
-          else {
-            escapeDataPresent = true;
-          }
+      // Branch-free (as in the Rust decoder): the flag sets the level, the max-level
+      // marker, the count, the next context and the first greater-1 position
+      // arithmetically. Only whether c1 is zero matters to the next sub-block.
+      {
+        const int ctxBase = CONTEXT_MODEL_COEFF_ABS_LEVEL_GREATER1_FLAG + ctxSet * 4 + (cIdx > 0 ? 16 : 0);
+        int greater1Ctx = 1;
+        int nGreater1 = 0;
+        int firstGreater1 = 16;
+        for (int c = 0; c < lastGreater1Coefficient; c++) {
+          int flag = tctx->cabac_decoder.decode_bit(&tctx->ctx_model[ctxBase + (greater1Ctx >= 3 ? 3 : greater1Ctx)]);
+          coeff_value[c] += flag;
+          coeff_has_max_base_level[c] = flag;
+          nGreater1 += flag;
+          int cand = flag ? c : 16;
+          firstGreater1 = cand < firstGreater1 ? cand : firstGreater1;
+          greater1Ctx = (greater1Ctx + (greater1Ctx > 0)) & (flag - 1);
         }
-        else {
-          coeff_has_max_base_level[c] = 0;
-
-          if (c1 < 3 && c1 > 0) {
-            c1++;
-          }
-        }
+        c1 = nGreater1 ? 0 : 1;
+        if (nGreater1 > 1) escapeDataPresent = true;
+        newLastGreater1ScanPos = firstGreater1 < 16 ? firstGreater1 : -1;
+        lastInvocation_ctxSet = ctxSet;
       }
 
       firstSubblock = false;
-      lastSubblock_greater1Ctx = lastInvocation_greater1Ctx;
 
 
       // --- decode greater-2 flag ---
