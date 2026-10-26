@@ -3140,10 +3140,13 @@ int residual_coding(thread_context* tctx,
 
     // ----- find significant coefficients in this sub-block -----
 
-    int16_t coeff_value[16];
-    int8_t coeff_scan_pos[16];
+    // Levels start at 1 and every significant coefficient has the maximal base level
+    // until the greater-1 flags say otherwise; slot 16 takes the branch-free loop's
+    // write past the last significant position.
+    int16_t coeff_value[16] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
+    int8_t coeff_scan_pos[17];
     int8_t coeff_sign[16];
-    int8_t coeff_has_max_base_level[16];
+    int8_t coeff_has_max_base_level[16] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
     int nCoefficients = 0;
 
 
@@ -3173,39 +3176,23 @@ int residual_coding(thread_context* tctx,
 
       // --- decode all coefficients' significant_coeff flags except for the DC coefficient ---
 
+      // Branch-free: a significance flag is close to a coin toss, so every position is
+      // written and only a significant one advances the count.
+      const bool skip_ctx = sps.range_extension.transform_skip_context_enabled_flag &&
+                            (tctx->cu_transquant_bypass_flag || tctx->transform_skip_flag[cIdx]);
+      const int skip_ctxInc = (cIdx == 0) ? 42 : (16 + 27);
+      int anySig = 0;
       for (int n = last_coeff; n > 0; n--) {
-        int subX = ScanOrderPos[n].x;
-        int subY = ScanOrderPos[n].y;
-        xC = x0 + subX;
-        yC = y0 + subY;
-
-
-        // for all AC coefficients in sub-block, a significant_coeff flag is coded
-
-        int ctxInc;
-        if (sps.range_extension.transform_skip_context_enabled_flag &&
-            (tctx->cu_transquant_bypass_flag || tctx->transform_skip_flag[cIdx])) {
-          ctxInc = (cIdx == 0) ? 42 : (16 + 27);
-        }
-        else {
-          ctxInc = ctxIdxMap[xC + (yC << log2TrafoSize)];
-        }
-
-        logtrace(LogSlice, "trafoSize: %d\n", 1 << log2TrafoSize);
-
+        xC = x0 + ScanOrderPos[n].x;
+        yC = y0 + ScanOrderPos[n].y;
+        int ctxInc = skip_ctx ? skip_ctxInc : ctxIdxMap[xC + (yC << log2TrafoSize)];
         int significant_coeff = decode_significant_coeff_flag_lookup(tctx, ctxInc);
-
-        if (significant_coeff) {
-          coeff_value[nCoefficients] = 1;
-          coeff_has_max_base_level[nCoefficients] = 1;
-          coeff_scan_pos[nCoefficients] = n;
-          nCoefficients++;
-
-          // since we have a coefficient in the sub-block,
-          // we cannot infer the DC coefficient anymore
-          inferSbDcSigCoeffFlag = 0;
-        }
+        coeff_scan_pos[nCoefficients] = n;
+        nCoefficients += significant_coeff;
+        anySig |= significant_coeff;
       }
+      // a coefficient in the sub-block: the DC coefficient cannot be inferred
+      if (anySig) inferSbDcSigCoeffFlag = 0;
 
 
       // --- decode DC coefficient significance ---
