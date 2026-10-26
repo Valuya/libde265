@@ -3339,18 +3339,13 @@ int residual_coding(thread_context* tctx,
         tctx->cabac_decoder.align_bypass();
       }
 
-      for (int n = 0; n < nCoefficients - 1; n++) {
-        coeff_sign[n] = tctx->cabac_decoder.decode_bypass();
-        logtrace(LogSlice, "sign[%d] = %d\n", n, coeff_sign[n]);
-      }
-
-      // n==nCoefficients-1
-      if (!pps.sign_data_hiding_flag || !signHidden) {
-        coeff_sign[nCoefficients - 1] = tctx->cabac_decoder.decode_bypass();
-        logtrace(LogSlice, "sign[%d] = %d\n", nCoefficients - 1, coeff_sign[nCoefficients - 1]);
-      }
-      else {
-        coeff_sign[nCoefficients - 1] = 0;
+      // All the sign bins of the sub-block in one bypass run (as in the Rust decoder).
+      {
+        int nSigns = (!pps.sign_data_hiding_flag || !signHidden) ? nCoefficients : nCoefficients - 1;
+        uint32_t signs = tctx->cabac_decoder.decode_FL_bypass(nSigns);
+        for (int n = 0; n < nCoefficients; n++) {
+          coeff_sign[n] = n < nSigns ? (signs >> (nSigns - 1 - n)) & 1 : 0;
+        }
       }
 
 
