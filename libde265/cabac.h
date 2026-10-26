@@ -37,6 +37,8 @@ public:
   void align_bypass();
   int  decode_TU_bypass(int cMax);
   uint32_t  decode_FL_bypass(int nBits);
+  // number of 1-bins before the terminating 0-bin, or -1 once more than max_ones
+  int  decode_bypass_unary(int max_ones);
   int  decode_TR_bypass(int cRiceParam, int cTRMax);
   uint32_t  decode_EGk_bypass(int k);
 
