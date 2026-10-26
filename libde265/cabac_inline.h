@@ -128,7 +128,32 @@ static const uint8_t cabac_transition[256] =
 
 inline __attribute__((always_inline)) int CABAC_decoder::decode_bit(context_model* model)
 {
-#ifdef DE265_CABAC_ASM_X86_64
+#if defined(DE265_CABAC_ASM_X86_64) && !defined(DE265_CABAC_C)
+  // The asm's branch-free decision in plain C++, so that the compiler can keep the
+  // engine in registers instead of reloading memory after every bin ("memory" clobber).
+  uint8_t* sp = reinterpret_cast<uint8_t*>(model);
+  const uint32_t b = *sp;                                   // state*2 + MPS
+  const uint32_t lps = LPS_table[b >> 1][(range >> 6) - 4];
+  const uint32_t r_mps = range - lps;
+  const uint32_t scaled = r_mps << 7;
+  const uint32_t lps_mask = ~uint32_t(int32_t(value - scaled) >> 31);  // all ones if LPS
+  uint32_t v = value - (scaled & lps_mask);
+  uint32_t r = r_mps + ((lps - r_mps) & lps_mask);
+  const uint32_t idx = b ^ (lps_mask & 0xFF);
+  *sp = cabac_transition[idx];
+  const int shift = __builtin_clz(r) - 23;                  // back to 9 bits
+  v <<= shift;
+  r <<= shift;
+  int bn = bits_needed + shift;
+  if (bn >= 0) {
+    if (bitstream_curr < bitstream_end) {
+      v |= uint32_t(*bitstream_curr++) << bn;
+    }
+    bn -= 8;
+  }
+  range = r; value = v; bits_needed = int16_t(bn);
+  return idx & 1;
+#elif defined(DE265_CABAC_ASM_X86_64)
   // x86-64 branchless arithmetic decoder. Bit-identical to the C fallback below.
   uint32_t range_l = range, value_l = value;
   int      bn_l    = bits_needed;
