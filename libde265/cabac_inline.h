@@ -363,4 +363,50 @@ inline __attribute__((always_inline)) int CABAC_decoder::decode_bypass()
 #endif
 }
 
+inline __attribute__((always_inline)) int CABAC_decoder::decode_FL_bypass_parallel(int nBits)
+{
+  logtrace(LogCABAC,"[%3d] bypass group r:%x v:%x (nBits=%d)\n",logcnt,
+           range, value, nBits);
+
+  value <<= nBits;
+  bits_needed+=nBits;
+
+  if (bits_needed >= 0)
+    {
+      if (bitstream_end > bitstream_curr) {
+        int input = *bitstream_curr++;
+        input <<= bits_needed;
+
+        bits_needed -= 8;
+        value |= input;
+      }
+    }
+
+  uint32_t scaled_range = range << 7;
+  int v = value / scaled_range;
+  if (unlikely(v>=(1<<nBits))) { v=(1<<nBits)-1; } // may happen with broken bitstreams
+  value -= v * scaled_range;
+
+  logtrace(LogCABAC,"[%3d] -> value %d  r:%x v:%x\n", logcnt+nBits-1,
+           v, range, value);
+
+#ifdef DE265_LOG_TRACE
+  logcnt+=nBits;
+#endif
+
+  return v;
+}
+
+// Up to 8 bins per division (decode_FL_bypass_parallel), also beyond 8 bins.
+inline __attribute__((always_inline)) uint32_t CABAC_decoder::decode_FL_bypass(int nBits)
+{
+  uint32_t v = 0;
+  while (nBits > 0) {
+    int k = nBits < 8 ? nBits : 8;
+    v = (v << k) | decode_FL_bypass_parallel(k);
+    nBits -= k;
+  }
+  return v;
+}
+
 #endif
