@@ -2491,13 +2491,11 @@ static int32_t decode_coeff_abs_level_remaining(thread_context* tctx,
 {
   logtrace(LogSlice, "# decode_coeff_abs_level_remaining\n");
 
-  uint32_t prefix = 0;
-  while (tctx->cabac_decoder.decode_bypass()) {
-    prefix++;
-    if (prefix > MAX_PREFIX) {
-      return 0; // TODO: error
-    }
+  int run = tctx->cabac_decoder.decode_bypass_unary(MAX_PREFIX);
+  if (run < 0) {
+    return 0; // TODO: error
   }
+  uint32_t prefix = run;
 
   // prefix = nb. 1 bits
 
