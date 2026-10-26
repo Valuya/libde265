@@ -145,10 +145,14 @@ inline __attribute__((always_inline)) int CABAC_decoder::decode_bit(context_mode
   v <<= shift;
   r <<= shift;
   int bn = bits_needed + shift;
-  if (bn >= 0) {
-    if (bitstream_curr < bitstream_end) {
-      v |= uint32_t(*bitstream_curr++) << bn;
-    }
+  if (likely(bitstream_curr < bitstream_end)) {
+    // branch-free refill: the next byte merged under a mask when bits are needed
+    const uint32_t need = uint32_t(int32_t(~bn) >> 31);   // all ones when bn >= 0
+    v |= (uint32_t(*bitstream_curr) << (bn & 7)) & need;
+    bitstream_curr += need & 1;
+    bn -= 8 & need;
+  }
+  else if (bn >= 0) {
     bn -= 8;
   }
   range = r; value = v; bits_needed = int16_t(bn);
@@ -304,41 +308,22 @@ inline __attribute__((always_inline)) int CABAC_decoder::decode_bit(context_mode
 inline __attribute__((always_inline)) int CABAC_decoder::decode_bypass()
 {
 #ifdef DE265_CABAC_ASM_X86_64
-  uint32_t value_l = value;
-  int      bn_l    = bits_needed;
-  uint8_t* curr_l  = bitstream_curr;
-  int bit_l;
-
-  __asm__ (
-    "add    %[value], %[value]        \n\t" // value <<= 1
-    "addl   $1, %[bn]                 \n\t" // bits_needed++
-    "js     1f                        \n\t" // bits_needed < 0: no refill
-    "cmp    %[end], %[curr]           \n\t"
-    "jae    2f                        \n\t" // curr >= end: no read
-    "movzbl (%[curr]), %%eax          \n\t"
-    "or     %%eax, %[value]           \n\t" // value |= *curr (bits_needed==0)
-    "inc    %[curr]                   \n\t"
-    "2:                               \n\t"
-    "movl   $-8, %[bn]                \n\t" // bits_needed = -8
-    "1:                               \n\t"
-    "mov    %[range], %%ecx           \n\t"
-    "shl    $7, %%ecx                 \n\t" // ecx = scaled_range
-    "mov    %[value], %%edx           \n\t"
-    "sub    %%ecx, %%edx              \n\t" // edx = value - scaled_range
-    "mov    %%edx, %%eax              \n\t"
-    "sar    $31, %%eax               \n\t"  // eax = mask (-1 if value<scaled -> bit 0)
-    "mov    %%eax, %[bit]             \n\t"
-    "add    $1, %[bit]                \n\t" // bit = mask + 1
-    "not    %%eax                     \n\t" // eax = ~mask
-    "and    %%eax, %%ecx              \n\t" // ecx = scaled & ~mask
-    "sub    %%ecx, %[value]           \n\t" // value -= scaled when bit==1
-    : [value]"+r"(value_l), [bn]"+r"(bn_l), [curr]"+r"(curr_l), [bit]"=&r"(bit_l)
-    : [range]"r"(range), [end]"r"(bitstream_end)
-    : "rax","rcx","rdx","cc","memory"
-  );
-
-  value = value_l; bits_needed = (int16_t)bn_l; bitstream_curr = curr_l;
-  return bit_l;
+  uint32_t v = value << 1;
+  int bn = bits_needed + 1;
+  if (likely(bitstream_curr < bitstream_end)) {
+    const uint32_t need = uint32_t(int32_t(~bn) >> 31);
+    v |= uint32_t(*bitstream_curr) & need;
+    bitstream_curr += need & 1;
+    bn -= 8 & need;
+  }
+  else if (bn >= 0) {
+    bn = -8;
+  }
+  const uint32_t scaled_range = range << 7;
+  const uint32_t one = uint32_t(int32_t(scaled_range - 1 - v) >> 31);   // all ones when v >= scaled_range
+  value = v - (scaled_range & one);
+  bits_needed = int16_t(bn);
+  return int(one & 1);
 #else
   logtrace(LogCABAC,"[%3d] bypass r:%x v:%x\n",logcnt,range, value);
 
