@@ -371,16 +371,13 @@ inline __attribute__((always_inline)) int CABAC_decoder::decode_FL_bypass_parall
   value <<= nBits;
   bits_needed+=nBits;
 
-  if (bits_needed >= 0)
-    {
-      if (bitstream_end > bitstream_curr) {
-        int input = *bitstream_curr++;
-        input <<= bits_needed;
-
-        bits_needed -= 8;
-        value |= input;
-      }
-    }
+  if (likely(bitstream_end > bitstream_curr)) {
+    // branch-free refill, as in decode_bit
+    const uint32_t need = uint32_t(int32_t(~int(bits_needed)) >> 31);
+    value |= (uint32_t(*bitstream_curr) << (bits_needed & 7)) & need;
+    bitstream_curr += need & 1;
+    bits_needed -= 8 & need;
+  }
 
   uint32_t scaled_range = range << 7;
   int v = value / scaled_range;
@@ -433,11 +430,11 @@ inline __attribute__((always_inline)) int CABAC_decoder::decode_bypass_unary(int
     const int take = leading < 8 ? leading + 1 : 8;
     value <<= take;
     bits_needed += take;
-    if (bits_needed >= 0) {
-      if (bitstream_end > bitstream_curr) {
-        value |= uint32_t(*bitstream_curr++) << bits_needed;
-        bits_needed -= 8;
-      }
+    if (likely(bitstream_end > bitstream_curr)) {
+      const uint32_t need = uint32_t(int32_t(~int(bits_needed)) >> 31);
+      value |= (uint32_t(*bitstream_curr) << (bits_needed & 7)) & need;
+      bitstream_curr += need & 1;
+      bits_needed -= 8 & need;
     }
     value -= (q8 >> (8 - take)) * scaled_range;
     if (leading < 8) {
