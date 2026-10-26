@@ -3415,17 +3415,15 @@ int residual_coding(thread_context* tctx,
         logtrace(LogSlice, "coeff_abs_level_remaining=%d\n", coeff_abs_level_remaining);
 
 
+        // Branch-free signs: both are close to coin tosses.
         int32_t currCoeff = baseLevel + coeff_abs_level_remaining;
-        if (coeff_sign[n]) {
-          currCoeff = -currCoeff;
-        }
+        int32_t neg = -(int32_t) coeff_sign[n];
+        currCoeff = (currCoeff ^ neg) - neg;
 
         if (pps.sign_data_hiding_flag && signHidden) {
           sumAbsLevel += currCoeff;
-
-          if (n == nCoefficients - 1 && (sumAbsLevel & 1)) {
-            currCoeff = -currCoeff;
-          }
+          int32_t flip = -(int32_t) ((n == nCoefficients - 1) & (sumAbsLevel & 1));
+          currCoeff = (currCoeff ^ flip) - flip;
         }
 
         logtrace(LogSlice, "quantized coefficient=%d\n", currCoeff);
