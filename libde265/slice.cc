@@ -2491,13 +2491,11 @@ static int32_t decode_coeff_abs_level_remaining(thread_context* tctx,
 {
   logtrace(LogSlice, "# decode_coeff_abs_level_remaining\n");
 
-  uint32_t prefix = 0;
-  while (tctx->cabac_decoder.decode_bypass()) {
-    prefix++;
-    if (prefix > MAX_PREFIX) {
-      return 0; // TODO: error
-    }
+  int run = tctx->cabac_decoder.decode_bypass_unary(MAX_PREFIX);
+  if (run < 0) {
+    return 0; // TODO: error
   }
+  uint32_t prefix = run;
 
   // prefix = nb. 1 bits
 
@@ -3140,10 +3138,13 @@ int residual_coding(thread_context* tctx,
 
     // ----- find significant coefficients in this sub-block -----
 
-    int16_t coeff_value[16];
-    int8_t coeff_scan_pos[16];
+    // Levels start at 1 and every significant coefficient has the maximal base level
+    // until the greater-1 flags say otherwise; slot 16 takes the branch-free loop's
+    // write past the last significant position.
+    int16_t coeff_value[16] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
+    int8_t coeff_scan_pos[17];
     int8_t coeff_sign[16];
-    int8_t coeff_has_max_base_level[16];
+    int8_t coeff_has_max_base_level[16] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
     int nCoefficients = 0;
 
 
@@ -3173,39 +3174,23 @@ int residual_coding(thread_context* tctx,
 
       // --- decode all coefficients' significant_coeff flags except for the DC coefficient ---
 
+      // Branch-free: a significance flag is close to a coin toss, so every position is
+      // written and only a significant one advances the count.
+      const bool skip_ctx = sps.range_extension.transform_skip_context_enabled_flag &&
+                            (tctx->cu_transquant_bypass_flag || tctx->transform_skip_flag[cIdx]);
+      const int skip_ctxInc = (cIdx == 0) ? 42 : (16 + 27);
+      int anySig = 0;
       for (int n = last_coeff; n > 0; n--) {
-        int subX = ScanOrderPos[n].x;
-        int subY = ScanOrderPos[n].y;
-        xC = x0 + subX;
-        yC = y0 + subY;
-
-
-        // for all AC coefficients in sub-block, a significant_coeff flag is coded
-
-        int ctxInc;
-        if (sps.range_extension.transform_skip_context_enabled_flag &&
-            (tctx->cu_transquant_bypass_flag || tctx->transform_skip_flag[cIdx])) {
-          ctxInc = (cIdx == 0) ? 42 : (16 + 27);
-        }
-        else {
-          ctxInc = ctxIdxMap[xC + (yC << log2TrafoSize)];
-        }
-
-        logtrace(LogSlice, "trafoSize: %d\n", 1 << log2TrafoSize);
-
+        xC = x0 + ScanOrderPos[n].x;
+        yC = y0 + ScanOrderPos[n].y;
+        int ctxInc = skip_ctx ? skip_ctxInc : ctxIdxMap[xC + (yC << log2TrafoSize)];
         int significant_coeff = decode_significant_coeff_flag_lookup(tctx, ctxInc);
-
-        if (significant_coeff) {
-          coeff_value[nCoefficients] = 1;
-          coeff_has_max_base_level[nCoefficients] = 1;
-          coeff_scan_pos[nCoefficients] = n;
-          nCoefficients++;
-
-          // since we have a coefficient in the sub-block,
-          // we cannot infer the DC coefficient anymore
-          inferSbDcSigCoeffFlag = 0;
-        }
+        coeff_scan_pos[nCoefficients] = n;
+        nCoefficients += significant_coeff;
+        anySig |= significant_coeff;
       }
+      // a coefficient in the sub-block: the DC coefficient cannot be inferred
+      if (anySig) inferSbDcSigCoeffFlag = 0;
 
 
       // --- decode DC coefficient significance ---
@@ -3282,39 +3267,30 @@ int residual_coding(thread_context* tctx,
       if (nCoefficients > 8) {
         escapeDataPresent = true;
       }
-      for (int c = 0; c < lastGreater1Coefficient; c++) {
-        int greater1_flag =
-            decode_coeff_abs_level_greater1(tctx, cIdx, i,
-                                            c == 0,
-                                            firstSubblock,
-                                            lastSubblock_greater1Ctx,
-                                            &lastInvocation_greater1Ctx,
-                                            &lastInvocation_coeff_abs_level_greater1_flag,
-                                            &lastInvocation_ctxSet, ctxSet);
-
-        if (greater1_flag) {
-          coeff_value[c]++;
-
-          c1 = 0;
-
-          if (newLastGreater1ScanPos == -1) {
-            newLastGreater1ScanPos = c;
-          }
-          else {
-            escapeDataPresent = true;
-          }
+      // Branch-free (as in the Rust decoder): the flag sets the level, the max-level
+      // marker, the count, the next context and the first greater-1 position
+      // arithmetically. Only whether c1 is zero matters to the next sub-block.
+      {
+        const int ctxBase = CONTEXT_MODEL_COEFF_ABS_LEVEL_GREATER1_FLAG + ctxSet * 4 + (cIdx > 0 ? 16 : 0);
+        int greater1Ctx = 1;
+        int nGreater1 = 0;
+        int firstGreater1 = 16;
+        for (int c = 0; c < lastGreater1Coefficient; c++) {
+          int flag = tctx->cabac_decoder.decode_bit(&tctx->ctx_model[ctxBase + (greater1Ctx >= 3 ? 3 : greater1Ctx)]);
+          coeff_value[c] += flag;
+          coeff_has_max_base_level[c] = flag;
+          nGreater1 += flag;
+          int cand = flag ? c : 16;
+          firstGreater1 = cand < firstGreater1 ? cand : firstGreater1;
+          greater1Ctx = (greater1Ctx + (greater1Ctx > 0)) & (flag - 1);
         }
-        else {
-          coeff_has_max_base_level[c] = 0;
-
-          if (c1 < 3 && c1 > 0) {
-            c1++;
-          }
-        }
+        c1 = nGreater1 ? 0 : 1;
+        if (nGreater1 > 1) escapeDataPresent = true;
+        newLastGreater1ScanPos = firstGreater1 < 16 ? firstGreater1 : -1;
+        lastInvocation_ctxSet = ctxSet;
       }
 
       firstSubblock = false;
-      lastSubblock_greater1Ctx = lastInvocation_greater1Ctx;
 
 
       // --- decode greater-2 flag ---
@@ -3361,18 +3337,13 @@ int residual_coding(thread_context* tctx,
         tctx->cabac_decoder.align_bypass();
       }
 
-      for (int n = 0; n < nCoefficients - 1; n++) {
-        coeff_sign[n] = tctx->cabac_decoder.decode_bypass();
-        logtrace(LogSlice, "sign[%d] = %d\n", n, coeff_sign[n]);
-      }
-
-      // n==nCoefficients-1
-      if (!pps.sign_data_hiding_flag || !signHidden) {
-        coeff_sign[nCoefficients - 1] = tctx->cabac_decoder.decode_bypass();
-        logtrace(LogSlice, "sign[%d] = %d\n", nCoefficients - 1, coeff_sign[nCoefficients - 1]);
-      }
-      else {
-        coeff_sign[nCoefficients - 1] = 0;
+      // All the sign bins of the sub-block in one bypass run (as in the Rust decoder).
+      {
+        int nSigns = (!pps.sign_data_hiding_flag || !signHidden) ? nCoefficients : nCoefficients - 1;
+        uint32_t signs = tctx->cabac_decoder.decode_FL_bypass(nSigns);
+        for (int n = 0; n < nCoefficients; n++) {
+          coeff_sign[n] = n < nSigns ? (signs >> (nSigns - 1 - n)) & 1 : 0;
+        }
       }
 
 
@@ -3444,17 +3415,15 @@ int residual_coding(thread_context* tctx,
         logtrace(LogSlice, "coeff_abs_level_remaining=%d\n", coeff_abs_level_remaining);
 
 
+        // Branch-free signs: both are close to coin tosses.
         int32_t currCoeff = baseLevel + coeff_abs_level_remaining;
-        if (coeff_sign[n]) {
-          currCoeff = -currCoeff;
-        }
+        int32_t neg = -(int32_t) coeff_sign[n];
+        currCoeff = (currCoeff ^ neg) - neg;
 
         if (pps.sign_data_hiding_flag && signHidden) {
           sumAbsLevel += currCoeff;
-
-          if (n == nCoefficients - 1 && (sumAbsLevel & 1)) {
-            currCoeff = -currCoeff;
-          }
+          int32_t flip = -(int32_t) ((n == nCoefficients - 1) & (sumAbsLevel & 1));
+          currCoeff = (currCoeff ^ flip) - flip;
         }
 
         logtrace(LogSlice, "quantized coefficient=%d\n", currCoeff);
