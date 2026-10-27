@@ -111,8 +111,9 @@ void init_acceleration_functions_sse(struct acceleration_functions* accel)
 
     accel->transform_skip_8 = ff_hevc_transform_skip_8_sse;
 
-    // actually, for these two functions, the scalar fallback seems to be faster than the SSE code
-    //accel->transform_4x4_luma_add_8 = ff_hevc_transform_4x4_luma_add_8_sse4; // SSE-4 only TODO
+    // The SSE4 4x4 DST is faster than the scalar fallback (measured on iPhone photos); the 4x4
+    // DCT stays scalar, as before.
+    accel->transform_4x4_dst_add_8 = ff_hevc_transform_4x4_luma_add_8_sse4;
     //accel->transform_4x4_add_8   = ff_hevc_transform_4x4_add_8_sse4;
 
     accel->transform_add_8[1] = ff_hevc_transform_8x8_add_8_sse4;
