@@ -363,4 +363,87 @@ inline __attribute__((always_inline)) int CABAC_decoder::decode_bypass()
 #endif
 }
 
+inline __attribute__((always_inline)) int CABAC_decoder::decode_FL_bypass_parallel(int nBits)
+{
+  logtrace(LogCABAC,"[%3d] bypass group r:%x v:%x (nBits=%d)\n",logcnt,
+           range, value, nBits);
+
+  value <<= nBits;
+  bits_needed+=nBits;
+
+  if (likely(bitstream_end > bitstream_curr)) {
+    // branch-free refill, as in decode_bit
+    const uint32_t need = uint32_t(int32_t(~int(bits_needed)) >> 31);
+    value |= (uint32_t(*bitstream_curr) << (bits_needed & 7)) & need;
+    bitstream_curr += need & 1;
+    bits_needed -= 8 & need;
+  }
+
+  uint32_t scaled_range = range << 7;
+  int v = value / scaled_range;
+  if (unlikely(v>=(1<<nBits))) { v=(1<<nBits)-1; } // may happen with broken bitstreams
+  value -= v * scaled_range;
+
+  logtrace(LogCABAC,"[%3d] -> value %d  r:%x v:%x\n", logcnt+nBits-1,
+           v, range, value);
+
+#ifdef DE265_LOG_TRACE
+  logcnt+=nBits;
+#endif
+
+  return v;
+}
+
+// Up to 8 bins per division (decode_FL_bypass_parallel), also beyond 8 bins.
+inline __attribute__((always_inline)) uint32_t CABAC_decoder::decode_FL_bypass(int nBits)
+{
+  uint32_t v = 0;
+  while (nBits > 0) {
+    int k = nBits < 8 ? nBits : 8;
+    v = (v << k) | decode_FL_bypass_parallel(k);
+    nBits -= k;
+  }
+  return v;
+}
+
+// A unary run of bypass bins, 8 bins per division (as in the Rust decoder): the
+// leading ones of an 8-bin quotient give the run, then only the bins up to the
+// terminating 0 are consumed, exactly as decode_FL_bypass_parallel(take) would.
+// Quotient bits depend only on value's bits from position 7 up, which the peek
+// and the real shift share.
+inline __attribute__((always_inline)) int CABAC_decoder::decode_bypass_unary(int max_ones)
+{
+  int ones = 0;
+  for (;;) {
+    const uint32_t scaled_range = range << 7;
+    const uint32_t next = (bitstream_end > bitstream_curr) ? *bitstream_curr : 0;
+    const uint32_t v8 = (value << 8) | (next << (bits_needed + 8));
+    const uint32_t q8 = v8 / scaled_range;
+    if (unlikely(q8 > 255)) {
+      // non-conforming stream: bin by bin
+      while (decode_bypass()) {
+        if (++ones > max_ones) return -1;
+      }
+      return ones;
+    }
+    const int leading = __builtin_clz(~(q8 << 24));   // 0..8
+    const int take = leading < 8 ? leading + 1 : 8;
+    value <<= take;
+    bits_needed += take;
+    if (likely(bitstream_end > bitstream_curr)) {
+      const uint32_t need = uint32_t(int32_t(~int(bits_needed)) >> 31);
+      value |= (uint32_t(*bitstream_curr) << (bits_needed & 7)) & need;
+      bitstream_curr += need & 1;
+      bits_needed -= 8 & need;
+    }
+    value -= (q8 >> (8 - take)) * scaled_range;
+    if (leading < 8) {
+      ones += leading;
+      return ones > max_ones ? -1 : ones;
+    }
+    ones += 8;
+    if (ones > max_ones) return -1;
+  }
+}
+
 #endif
