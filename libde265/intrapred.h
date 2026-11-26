@@ -657,10 +657,24 @@ void intra_border_computer<pixel_t>::reference_sample_substitution()
         out_border[-2*nT] = firstValue;
       }
 
-      for (int i=-2*nT+1; i<=2*nT; i++)
-        if (!available[i]) {
-          out_border[i]=out_border[i-1];
+      // Unavailable samples come in runs: fill each run with the sample before it.
+      const int end = 2*nT+1;
+      int i = -2*nT+1;
+      while (i < end) {
+        while (i + 8 <= end) {
+          uint64_t a;
+          memcpy(&a, available + i, 8);
+          if (a != 0x0101010101010101ULL) break;
+          i += 8;
         }
+        while (i < end && available[i]) i++;
+        if (i == end) break;
+        int j = i + 1;
+        while (j < end && !available[j]) j++;
+        const pixel_t fill = out_border[i-1];
+        for (int k = i; k < j; k++) out_border[k] = fill;
+        i = j;
+      }
     }
   }
 
