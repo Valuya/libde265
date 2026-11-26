@@ -212,4 +212,6 @@ class CABAC_encoder_estim_constant : public CABAC_encoder_estim
   bool modifies_context() const override { return false; }
 };
 
+#include "cabac_inline.h"
+
 #endif
